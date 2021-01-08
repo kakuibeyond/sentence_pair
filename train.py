@@ -7,6 +7,7 @@ import tqdm
 import time
 import random
 import numpy as np
+import pandas as pd
 from sklearn.metrics import precision_score, recall_score, f1_score
 import torch
 import torch.nn.functional as F
@@ -31,6 +32,7 @@ filemap = {
     'test': './data/process_data/test.tsv'
 }
 
+# 读取数据，返回query文本，reply文本，label标签(0/1)
 def read_data(mode='train'):
     filename = filemap[mode]
     queries, replies,labels=[],[],[]
@@ -49,6 +51,7 @@ def read_data(mode='train'):
     return queries,replies,labels
 
 
+# 封装数据集类，返回的token.ids,token.label,token.attention_mask组成的tuple
 class Dataset(torch.utils.data.Dataset):
     def __init__(self,mode):
         self.tokenizer=tokenizers.BertWordPieceTokenizer("./model/RoBERTa/vocab.txt")
@@ -76,6 +79,7 @@ class CLASSIFIER:
             roberta_state=torch.load('model/RoBERTa/chinese-roberta-wwm-ext.bin', map_location=self.device).state_dict()
             self.model.roberta.load_state_dict(roberta_state)
 
+    #在训练过程中实时验证模型的好坏
     def val(self,loader_test):
         self.model.eval()
         y = np.array([])
@@ -93,14 +97,14 @@ class CLASSIFIER:
                 batch_probs = batch_output.sigmoid().numpy()
                 batch_pred = [1 if i>0.5 else 0 for i in batch_probs]
                 pred = np.append(pred, batch_pred)
-        loss /= step+1
-        self.model.train()
+        loss /= step+1# 返回的loss为每个batch的平均
+        self.model.train()#验证之后需要将模型继续变为train模式，后面继续训练
         precision = precision_score(y_true=y, y_pred=pred)
         recall = recall_score(y_true=y, y_pred=pred)
         f1 = f1_score(y_true=y, y_pred=pred)
         return precision,recall,f1,loss
 
-
+    # 根据训练好的本地模型预测真测试集，测试集没有真标签，因此这里返回的precision, recall, f1无意义，仅为了得到pred
     def predict(self, check_point, mode):
         loader_test=torch.utils.data.DataLoader(dataset=Dataset(mode),batch_size=128,shuffle=False,num_workers=0)
         pth=torch.load(check_point,map_location='cpu')
@@ -128,6 +132,7 @@ class CLASSIFIER:
         print('precision: {}\nrecall: {}\nf1 score: {}'.format(precision, recall, f1))
         return pred, probs, precision, recall, f1
 
+    # 这里也有check_point，可以在未完成的基础上继续训练
     def train(self,check_point='',epochs=10,batch_size=16):
         loader_train=torch.utils.data.DataLoader(dataset=Dataset('train'),batch_size=batch_size,shuffle=True,num_workers=0)
         loader_test=torch.utils.data.DataLoader(dataset=Dataset('dev'),batch_size=128,shuffle=False,num_workers=0)
@@ -159,6 +164,7 @@ class CLASSIFIER:
 
                 loader_t.set_postfix(training="loss:{:.6f}".format(loss.item()))
 
+                # 每500个batch尝试评估模型，并实时保存最好的3个模型
                 if step%500==0:
                     pth={'weights':self.model.state_dict(),'optimizer':optimizer.state_dict()}
 
@@ -179,38 +185,48 @@ class CLASSIFIER:
             scheduler.step()
 
 
-def predict_analysis(check_point, mode, result_file, scorefile):
+# 根据训练好并已保存的模型进行预测分析真正的测试集，并生成提交文件
+def predict_analysis(check_point, mode, submission_file):
     config_roberta = BertConfig.from_pretrained('model/RoBERTa/config.json')
     classifier=CLASSIFIER(config=config_roberta, load_pretrained=True)
     pred, probs, precision, recall, f1 = classifier.predict(check_point=check_point, mode=mode)
     texts=[]
     filename = filemap[mode]
-    with open(filename,encoding='utf-8') as f:
-        f_csv=csv.reader(f, delimiter='\t')
-        for line in f_csv:
-            texts.append(line)
-    with open(result_file, 'w', encoding='utf-8') as writefile:
-        for index, line in enumerate(texts):
-            true_label = 0 if mode=='test' else line[4]
-            writefile.write('{}\t{}\t{}\t{}\t{}\n'.format(int(pred[index]), probs[index], true_label, line[2], line[3]))
-    with open(scorefile, 'w', encoding='utf-8') as f:
-        f.write('precision: {}\nrecall: {}\nf1 score: {}'.format(precision, recall, f1))
+    if mode=='test':
+        df_test = pd.read_csv(filename,sep='\t',header=None)
+        df_test.columns = ['qid','rid','q','r']
+        df_test['label'] = pred.astype(int)
+        df_test[['qid','rid','label']].to_csv(submission_file,index=False, header=None, sep='\t')
+
+    # with open(filename,encoding='utf-8') as f:
+    #     f_csv=csv.reader(f, delimiter='\t')
+    #     for line in f_csv:
+    #         texts.append(line)
+    # with open(result_file, 'w', encoding='utf-8') as writefile:
+    #     for index, line in enumerate(texts):
+    #         true_label = 0 if mode=='test' else line[4]
+    #         writefile.write('{}\t{}\t{}\t{}\t{}\n'.format(int(pred[index]), probs[index], true_label, line[2], line[3]))
+    # with open(scorefile, 'w', encoding='utf-8') as f:
+    #     f.write('precision: {}\nrecall: {}\nf1 score: {}'.format(precision, recall, f1))
 
 
 if __name__ == "__main__":
-    filename = 'roberta_cls_checkpoint'
-    if not os.path.exists(filename):
-        os.mkdir('roberta_cls_checkpoint')
-    config_roberta = BertConfig.from_pretrained('model/RoBERTa/config.json')
-    classifier=CLASSIFIER(config=config_roberta, load_pretrained=True)
-    classifier.train()
+    cpt_path = 'roberta_cls_checkpoint'
+    sub_path = 'submission'
+    if not os.path.exists(sub_path):
+        os.mkdir(sub_path)
+    if not os.path.exists(cpt_path):
+        os.mkdir(cpt_path)
+    # config_roberta = BertConfig.from_pretrained('model/RoBERTa/config.json')
+    # classifier=CLASSIFIER(config=config_roberta, load_pretrained=True)
+    # classifier.train()
 
-    # mode = 'test'
-    # for file in  os.listdir(filename):
-    #     if file.endswith('.pth'):
-    #         filepath = os.path.join(filename, file)
-    #         print(filepath)
-    #         time_start = time.perf_counter()
-    #         predict_analysis(check_point=filepath, mode=mode, result_file='{}/predict_result/{}_{}_res.tsv'.format(filename, mode, file), scorefile='{}/predict_result/{}_{}_score.txt'.format(filename, mode, file))
-    #         time_end = time.perf_counter()
-    #         print('time: {}s'.format(time_end - time_start))
+    mode = 'test'
+    filepath = os.path.join(cpt_path, 'epoch4_batch500_f1_score_0.8019.pth')
+    time_start = time.perf_counter()
+    predict_analysis(check_point=filepath,
+                    mode=mode,
+                    submission_file='submission/submission_0.8019.tsv')
+
+    time_end = time.perf_counter()
+    print('time: {}s'.format(time_end - time_start))

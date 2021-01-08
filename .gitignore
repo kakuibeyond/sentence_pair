@@ -1,6 +1,6 @@
 __pycache__/*
 .vscode/*
 .DS_Store
-roberta_cls_checkpoint/*
-model/*
+roberta_cls_checkpoint/
 model/RoBERTa/chinese-roberta-wwm-ext.bin
+submission/
