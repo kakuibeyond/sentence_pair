@@ -73,9 +73,10 @@ class Dataset(torch.utils.data.Dataset):
 class CLASSIFIER:
     def __init__(self, config, load_pretrained=True):
         self.device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = RobertaModel(config).to(self.device)
+        self.model = RobertaModel(config).to(self.device)# 模型结构确定
         # self.model = BertForSequenceClassification(config).to(self.device)
         if load_pretrained:
+            # 载入预训练权重
             roberta_state=torch.load('model/RoBERTa/chinese-roberta-wwm-ext.bin', map_location=self.device).state_dict()
             self.model.roberta.load_state_dict(roberta_state)
 
